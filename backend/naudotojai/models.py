@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 
@@ -57,6 +58,35 @@ class Naudotojas(AbstractUser):
     @property
     def yra_administratorius(self):
         return self.role == self.Role.ADMINISTRATORIUS
+
+    # --- Paskyros užrakinimas po nesėkmingų prisijungimų (AUT-02) ---
+
+    def yra_uzrakintas(self, dabar):
+        return bool(self.uzrakinta_iki and self.uzrakinta_iki > dabar)
+
+    def liko_uzrakinta_min(self, dabar):
+        """Likusios užrakinimo minutės, suapvalintos į viršų (rodoma naudotojui)."""
+        return int((self.uzrakinta_iki - dabar).total_seconds() // 60) + 1
+
+    def gali_prisijungti(self, slaptazodis):
+        return self.check_password(slaptazodis) and self.is_active
+
+    def uzregistruoti_nesekminga(self, dabar):
+        """Padidina nesėkmių skaitiklį; pasiekus ribą užrakina paskyrą. Grąžina True, jei užrakinta."""
+        self.nesekmingi_bandymai += 1
+        if self.nesekmingi_bandymai >= settings.PRISIJUNGIMO_BANDYMAI:
+            self.uzrakinta_iki = dabar + settings.UZRAKINIMO_TRUKME
+            self.nesekmingi_bandymai = 0
+            self.save(update_fields=["nesekmingi_bandymai", "uzrakinta_iki"])
+            return True
+        self.save(update_fields=["nesekmingi_bandymai"])
+        return False
+
+    def uzregistruoti_sekminga(self, dabar):
+        self.nesekmingi_bandymai = 0
+        self.uzrakinta_iki = None
+        self.last_login = dabar
+        self.save(update_fields=["nesekmingi_bandymai", "uzrakinta_iki", "last_login"])
 
     def __str__(self):
         return self.email

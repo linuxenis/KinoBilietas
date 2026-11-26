@@ -35,6 +35,31 @@ def registracija(request):
     return Response(_zetonai(naudotojas), status=status.HTTP_201_CREATED)
 
 
+BENDRA_KLAIDA = "Neteisingas el. paštas arba slaptažodis."
+
+
+def _uzrakinta(zinute):
+    return Response({"klaida": zinute, "uzrakinta": True}, status=status.HTTP_423_LOCKED)
+
+
+def _neteisingi_duomenys(papildymas=""):
+    return Response({"klaida": BENDRA_KLAIDA + papildymas}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+def _bandymu_zodis(kiekis):
+    return "bandymas" if kiekis == 1 else "bandymai"
+
+
+def _nesekmingas_bandymas(naudotojas, dabar):
+    """Užregistruoja nesėkmę ir sudaro atsakymą: užrakinta (423) arba likusių bandymų pranešimas (401)."""
+    riba = settings.PRISIJUNGIMO_BANDYMAI
+    if naudotojas.uzregistruoti_nesekminga(dabar):
+        minutes = int(settings.UZRAKINIMO_TRUKME.total_seconds() // 60)
+        return _uzrakinta(f"Paskyra laikinai užrakinta {minutes} min. po {riba} nesėkmingų bandymų.")
+    liko = riba - naudotojas.nesekmingi_bandymai
+    return _neteisingi_duomenys(f" Liko {liko} {_bandymu_zodis(liko)}.")
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def prisijungimas(request):
@@ -43,43 +68,20 @@ def prisijungimas(request):
     s.is_valid(raise_exception=True)
     email = s.validated_data["email"].lower()
     slaptazodis = s.validated_data["slaptazodis"]
-    bendra_klaida = {"klaida": "Neteisingas el. paštas arba slaptažodis."}
 
     naudotojas = Naudotojas.objects.filter(email=email).first()
     if naudotojas is None:
-        return Response(bendra_klaida, status=status.HTTP_401_UNAUTHORIZED)
+        return _neteisingi_duomenys()
 
     dabar = timezone.now()
-    if naudotojas.uzrakinta_iki and naudotojas.uzrakinta_iki > dabar:
-        liko_min = int((naudotojas.uzrakinta_iki - dabar).total_seconds() // 60) + 1
-        return Response(
-            {"klaida": f"Paskyra laikinai užrakinta. Bandykite dar kartą po {liko_min} min.", "uzrakinta": True},
-            status=status.HTTP_423_LOCKED,
-        )
+    if naudotojas.yra_uzrakintas(dabar):
+        liko_min = naudotojas.liko_uzrakinta_min(dabar)
+        return _uzrakinta(f"Paskyra laikinai užrakinta. Bandykite dar kartą po {liko_min} min.")
 
-    if not naudotojas.check_password(slaptazodis) or not naudotojas.is_active:
-        naudotojas.nesekmingi_bandymai += 1
-        riba = settings.PRISIJUNGIMO_BANDYMAI
-        if naudotojas.nesekmingi_bandymai >= riba:
-            naudotojas.uzrakinta_iki = dabar + settings.UZRAKINIMO_TRUKME
-            naudotojas.nesekmingi_bandymai = 0
-            naudotojas.save(update_fields=["nesekmingi_bandymai", "uzrakinta_iki"])
-            minutes = int(settings.UZRAKINIMO_TRUKME.total_seconds() // 60)
-            return Response(
-                {"klaida": f"Paskyra laikinai užrakinta {minutes} min. po {riba} nesėkmingų bandymų.", "uzrakinta": True},
-                status=status.HTTP_423_LOCKED,
-            )
-        naudotojas.save(update_fields=["nesekmingi_bandymai"])
-        liko = riba - naudotojas.nesekmingi_bandymai
-        return Response(
-            {"klaida": f"Neteisingas el. paštas arba slaptažodis. Liko {liko} bandym{'as' if liko == 1 else 'ai'}."},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
+    if not naudotojas.gali_prisijungti(slaptazodis):
+        return _nesekmingas_bandymas(naudotojas, dabar)
 
-    naudotojas.nesekmingi_bandymai = 0
-    naudotojas.uzrakinta_iki = None
-    naudotojas.last_login = dabar
-    naudotojas.save(update_fields=["nesekmingi_bandymai", "uzrakinta_iki", "last_login"])
+    naudotojas.uzregistruoti_sekminga(dabar)
     return Response(_zetonai(naudotojas))
 
 
