@@ -9,7 +9,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from naudotojai.permissions import YraAdministratorius
+from naudotojai.permissions import AdminRasymui, YraAdministratorius
+from sales.paslaugos import sales_schema
 
 from . import paslaugos, seansai as seansu_paslaugos
 from .models import Filmas, FilmuPlatintojas, Seansas, Zanras
@@ -21,13 +22,6 @@ from .serializers import (
     seanso_administravimui,
     seanso_eilute,
 )
-
-
-class AdminRasymui(YraAdministratorius):
-    """GET visiems, keitimo metodai tik administratoriui (FR-13)."""
-
-    def has_permission(self, request, view):
-        return request.method in ("GET", "HEAD", "OPTIONS") or super().has_permission(request, view)
 
 
 def _repertuaro_data(tekstas):
@@ -43,7 +37,7 @@ def _repertuaro_data(tekstas):
     return reiksme, None
 
 
-def _filmu_sarasas(grupes, request):
+def _filmu_sarasas(grupes):
     rezultatas = []
     for g in grupes:
         filmas = RepertuaroFilmasSerializer(g["filmas"]).data
@@ -93,7 +87,7 @@ def repertuaras(request):
         artimiausia = paslaugos.artimiausia_data(filtruoti, po=iki)
     return Response({
         "data": data.isoformat(),
-        "filmai": _filmu_sarasas(grupes, request),
+        "filmai": _filmu_sarasas(grupes),
         "artimiausia_data": artimiausia.isoformat() if artimiausia else None,
     })
 
@@ -204,3 +198,26 @@ def seanso_atsaukimas(request, pk):
     seansu_paslaugos.atsaukti(objektas)
     objektas = Seansas.objects.select_related("filmas", "sale").prefetch_related("kainos").get(pk=pk)
     return Response(seanso_administravimui(objektas))
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def seanso_schema(request, pk):
+    """ZS-04 / SAL-02 / FR-04: GET /api/v1/seansai/{id}/schema"""
+    seansas = get_object_or_404(
+        Seansas.objects.select_related("filmas", "sale").prefetch_related("kainos"),
+        pk=pk, busena=Seansas.Busena.SUPLANUOTAS,
+    )
+    kainos = {k.bilieto_tipas: str(k.suma) for k in seansas.kainos.all()}
+    return Response({
+        "seansas": {
+            "id": seansas.id,
+            "filmas": seansas.filmas.pavadinimas,
+            "filmas_id": seansas.filmas_id,
+            "pradzia": seansas.pradzia,
+            "formatas": seansas.formatas,
+            "sale": seansas.sale.pavadinimas,
+            "suaugusiojo_kaina": kainos.get("SUAUGUSIOJO"),
+        },
+        "eiles": sales_schema(seansas.sale),
+    })

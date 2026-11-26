@@ -48,11 +48,9 @@ def matmenys(sale):
 
 
 def turi_busimu_seansu(sale):
-    from repertuaras.models import Seansas
-
-    return Seansas.objects.filter(
-        sale=sale, busena=Seansas.Busena.SUPLANUOTAS, pradzia__gt=timezone.now()
-    ).exists()
+    """Naudoja atvirkštinį ryšį sale.seansai, todėl salių komponentui nereikia importuoti repertuaro."""
+    seansai = sale.seansai
+    return seansai.filter(busena=seansai.model.Busena.SUPLANUOTAS, pradzia__gt=timezone.now()).exists()
 
 
 def _tipai(d):
