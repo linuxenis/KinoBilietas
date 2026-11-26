@@ -1,39 +1,8 @@
 """K6 Salių komponentas: salės schemos generavimas ir keitimas (FR-09, SAL-03, SAL-04)."""
 from django.db import transaction
 from django.utils import timezone
-from rest_framework import serializers
 
-from .models import Eile, KinoTeatras, Sale, Vieta
-
-NEPRIEINAMA = "NEPRIEINAMA"
-
-
-class VietosTipasSerializer(serializers.Serializer):
-    eile = serializers.IntegerField(min_value=1)
-    vieta = serializers.IntegerField(min_value=1)
-    tipas = serializers.ChoiceField(choices=["STANDARTINE", "NEIGALIESIEMS", NEPRIEINAMA])
-
-
-class SalesFormaSerializer(serializers.Serializer):
-    pavadinimas = serializers.CharField(max_length=50, error_messages={
-        "blank": "Įveskite salės pavadinimą.", "required": "Įveskite salės pavadinimą.",
-        "max_length": "Pavadinimas negali būti ilgesnis nei 50 simbolių.",
-    })
-    eiliu = serializers.IntegerField(min_value=1, max_value=30, error_messages={
-        "required": "Įveskite eilių skaičių.", "invalid": "Eilių skaičius turi būti nuo 1 iki 30.",
-        "min_value": "Eilių skaičius turi būti nuo 1 iki 30.", "max_value": "Eilių skaičius turi būti nuo 1 iki 30.",
-    })
-    vietu = serializers.IntegerField(min_value=1, max_value=40, error_messages={
-        "required": "Įveskite vietų skaičių eilėje.", "invalid": "Vietų skaičius turi būti nuo 1 iki 40.",
-        "min_value": "Vietų skaičius turi būti nuo 1 iki 40.", "max_value": "Vietų skaičius turi būti nuo 1 iki 40.",
-    })
-    vietos = VietosTipasSerializer(many=True, required=False)
-
-    def validate(self, d):
-        for v in d.get("vietos", []):
-            if v["eile"] > d["eiliu"] or v["vieta"] > d["vietu"]:
-                raise serializers.ValidationError({"vietos": "Nurodyta vieta nepatenka į salės schemą."})
-        return d
+from .models import NEPRIEINAMA, Eile, KinoTeatras, Sale, Vieta
 
 
 class SalesKlaida(Exception):
@@ -57,19 +26,31 @@ def _tipai(d):
     return {(v["eile"], v["vieta"]): v["tipas"] for v in d.get("vietos", [])}
 
 
+def _vietos_savybes(tipas_formoje):
+    """Formos tipą (STANDARTINE / NEIGALIESIEMS / NEPRIEINAMA) paverčia modelio laukais: (tipas, prieinama)."""
+    tipas = Vieta.Tipas.NEIGALIESIEMS if tipas_formoje == Vieta.Tipas.NEIGALIESIEMS else Vieta.Tipas.STANDARTINE
+    return tipas, tipas_formoje != NEPRIEINAMA
+
+
 def _generuoti(sale, d):
     """SAL-03: sugeneruoja eiles ir vietas pagal eilių ir vietų skaičių."""
     tipai = _tipai(d)
     for e in range(1, d["eiliu"] + 1):
         eile = Eile.objects.create(sale=sale, numeris=e)
-        Vieta.objects.bulk_create([
-            Vieta(
-                eile=eile, numeris=v,
-                tipas="NEIGALIESIEMS" if tipai.get((e, v)) == "NEIGALIESIEMS" else "STANDARTINE",
-                prieinama=tipai.get((e, v)) != NEPRIEINAMA,
-            )
-            for v in range(1, d["vietu"] + 1)
-        ])
+        vietos = []
+        for v in range(1, d["vietu"] + 1):
+            tipas, prieinama = _vietos_savybes(tipai.get((e, v), Vieta.Tipas.STANDARTINE))
+            vietos.append(Vieta(eile=eile, numeris=v, tipas=tipas, prieinama=prieinama))
+        Vieta.objects.bulk_create(vietos)
+
+
+def _atnaujinti_vietu_tipus(sale, d):
+    """Pakeičia tik vietų tipus ir prieinamumą (viena bulk_update užklausa vietoj užklausos kiekvienai vietai)."""
+    tipai = _tipai(d)
+    vietos = list(Vieta.objects.filter(eile__sale=sale).select_related("eile"))
+    for v in vietos:
+        v.tipas, v.prieinama = _vietos_savybes(tipai.get((v.eile.numeris, v.numeris), Vieta.Tipas.STANDARTINE))
+    Vieta.objects.bulk_update(vietos, ["tipas", "prieinama"])
 
 
 @transaction.atomic
@@ -93,12 +74,7 @@ def atnaujinti(sale, d):
         sale.eiles.all().delete()
         _generuoti(sale, d)
     else:
-        tipai = _tipai(d)
-        for v in Vieta.objects.filter(eile__sale=sale).select_related("eile"):
-            tipas = tipai.get((v.eile.numeris, v.numeris), "STANDARTINE")
-            v.tipas = "NEIGALIESIEMS" if tipas == "NEIGALIESIEMS" else "STANDARTINE"
-            v.prieinama = tipas != NEPRIEINAMA
-            v.save(update_fields=["tipas", "prieinama"])
+        _atnaujinti_vietu_tipus(sale, d)
     sale.pavadinimas = d["pavadinimas"]
     sale.save(update_fields=["pavadinimas"])
     return sale

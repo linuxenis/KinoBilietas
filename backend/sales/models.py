@@ -1,5 +1,8 @@
 from django.db import models
 
+# Formos reikšmė: tokia vieta saugoma kaip Vieta(prieinama=False), o ne kaip atskiras tipas
+NEPRIEINAMA = "NEPRIEINAMA"
+
 
 class KinoTeatras(models.Model):
     pavadinimas = models.CharField(max_length=100)

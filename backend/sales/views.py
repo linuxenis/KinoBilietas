@@ -10,6 +10,7 @@ from naudotojai.permissions import AdminRasymui, YraAdministratorius
 from . import redagavimas
 from .models import Sale
 from .paslaugos import sales_schema
+from .serializers import SalesFormaSerializer
 
 
 def _sales_duomenys(sale):
@@ -37,7 +38,7 @@ def kino_teatras(request):
 def saliu_sarasas(request):
     """GET: salių sąrašas (ZS-02). POST: naujos salės kūrimas (API-04, SAL-03)."""
     if request.method == "POST":
-        s = redagavimas.SalesFormaSerializer(data=request.data)
+        s = SalesFormaSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         return Response(_sales_duomenys(redagavimas.sukurti(s.validated_data)), status=201)
     return Response([{"id": s.id, "pavadinimas": s.pavadinimas, "talpa": s.talpa} for s in Sale.objects.all()])
@@ -50,7 +51,7 @@ def sale(request, pk):
     objektas = get_object_or_404(Sale, pk=pk)
     if request.method == "GET":
         return Response(_sales_duomenys(objektas))
-    s = redagavimas.SalesFormaSerializer(data=request.data)
+    s = SalesFormaSerializer(data=request.data)
     s.is_valid(raise_exception=True)
     try:
         objektas = redagavimas.atnaujinti(objektas, s.validated_data)
