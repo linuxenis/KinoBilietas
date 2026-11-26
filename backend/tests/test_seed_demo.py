@@ -101,3 +101,10 @@ def test_administratoriaus_slaptazodis_imamas_is_aplinkos(monkeypatch):
     admin = Naudotojas.objects.get(email="admin@kinobilietas.lt")
     assert admin.check_password("Kitas2026x")
     assert admin.role == Naudotojas.Role.ADMINISTRATORIUS
+
+
+def test_klientu_slaptazodis_imamas_is_aplinkos(monkeypatch):
+    monkeypatch.setenv("DEMO_KLIENTO_SLAPTAZODIS", "Klientas2026x")
+    _seed()
+    for email in ("ona@pavyzdys.lt", "jonas@pavyzdys.lt", "egle@pavyzdys.lt"):
+        assert Naudotojas.objects.get(email=email).check_password("Klientas2026x")

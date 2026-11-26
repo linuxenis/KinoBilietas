@@ -24,6 +24,7 @@ services:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,api}
       DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-Admin2026}
+      DEMO_KLIENTO_SLAPTAZODIS: ${DEMO_KLIENTO_SLAPTAZODIS:-Kinas2026}
     volumes:
       - media:/app/media
       - static:/app/staticfiles

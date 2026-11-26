@@ -48,7 +48,7 @@ Iš naujo: `python manage.py seed_demo --is-naujo`.
 | Rolė | El. paštas | Slaptažodis |
 |---|---|---|
 | Administratorius | admin@kinobilietas.lt | `DEMO_ADMIN_PASSWORD` (numatytasis Admin2026) |
-| Klientas | ona@pavyzdys.lt | Kinas2026 |
+| Klientas | ona@pavyzdys.lt | `DEMO_KLIENTO_SLAPTAZODIS` (numatytasis Kinas2026) |
 
 ## Struktūra (Koudo-Jodano architektūra)
 

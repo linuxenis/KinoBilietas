@@ -73,6 +73,28 @@ PLATINTOJAI = [
 PLAKATAI = Path(__file__).resolve().parents[2] / "demo_plakatai"
 
 KAINOS = {"SUAUGUSIOJO": Decimal("6.50"), "STUDENTO": Decimal("5.00"), "SENJORO": Decimal("4.50")}
+F3D_PRIEDAS = Decimal("2.00")
+SEANSU_DIENOS = 14
+PIRMO_SEANSO_VALANDA = 11  # kiekviena kita salė pradeda viena valanda vėliau
+PASKUTINIO_SEANSO_PRADZIA = 22  # naujų seansų po šios valandos nebepradedama
+N18_PRADZIA = 20  # N-18 filmas rodomas tik vakare
+SEANSU_TARPAS_MIN = 15  # kito seanso pradžia suapvalinama iki 15 min.
+DEMO_ADMIN_EL_PASTAS = "admin@kinobilietas.lt"
+DEMO_KLIENTAI = [("Ona", "ona@pavyzdys.lt"), ("Jonas", "jonas@pavyzdys.lt"), ("Eglė", "egle@pavyzdys.lt")]
+
+
+def _per_anksti(filmas, pradzia):
+    return filmas.cenzas == Filmas.Cenzas.N18 and pradzia.hour < N18_PRADZIA
+
+
+def _formatas(yra_pirma_sale, filmas):
+    yra_duna = filmas.pavadinimas.startswith("Dūna")
+    return Seansas.Formatas.F3D if yra_pirma_sale and yra_duna else Seansas.Formatas.F2D
+
+
+def _kito_seanso_pradzia(pabaiga):
+    papildymas = timedelta(minutes=(SEANSU_TARPAS_MIN - pabaiga.minute % SEANSU_TARPAS_MIN) % SEANSU_TARPAS_MIN)
+    return (pabaiga + papildymas).replace(second=0, microsecond=0)
 
 
 class Command(BaseCommand):
@@ -87,89 +109,38 @@ class Command(BaseCommand):
             self.stdout.write("Demonstraciniai duomenys jau yra, praleidžiama.")
             return
         if opts["is_naujo"]:
-            SeansoKaina.objects.all().delete()
-            Seansas.objects.all().delete()
-            for f in Filmas.objects.exclude(plakatas=""):
-                f.plakatas.delete(save=False)
-            Filmas.objects.all().delete()
-            FilmuPlatintojas.objects.all().delete()
-            Zanras.objects.all().delete()
-            KinoTeatras.objects.all().delete()
-            Naudotojas.objects.filter(is_superuser=False).delete()
+            self._isvalyti()
 
+        sales = self._sukurti_sales()
+        filmai, zanrai = self._sukurti_filmus()
+        seansu_kiekis = self._sukurti_seansus(sales, filmai)
+        self._sukurti_naudotojus()
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Sukurta: 3 salės, {len(filmai)} filmai, {len(zanrai)} žanrai, {seansu_kiekis} seansai, 4 naudotojai."
+        ))
+
+    def _isvalyti(self):
+        SeansoKaina.objects.all().delete()
+        Seansas.objects.all().delete()
+        for f in Filmas.objects.exclude(plakatas=""):
+            f.plakatas.delete(save=False)
+        Filmas.objects.all().delete()
+        FilmuPlatintojas.objects.all().delete()
+        Zanras.objects.all().delete()
+        KinoTeatras.objects.all().delete()
+        Naudotojas.objects.filter(is_superuser=False).delete()
+
+    def _sukurti_sales(self):
         teatras = KinoTeatras.objects.create(
             pavadinimas=settings.KINO_TEATRAS["pavadinimas"], adresas=settings.KINO_TEATRAS["adresas"],
             telefonas="+370 600 00000", el_pastas="info@kinobilietas.lt",
         )
-        sale1 = self._sale(teatras, "1 salė", eiliu=8, vietu=15,
-                           neigaliesiems=[(1, 1), (1, 2)], neprieinamos=[(8, 15)])
-        sale2 = self._sale(teatras, "2 salė", eiliu=6, vietu=12,
-                           neigaliesiems=[(1, 1)], neprieinamos=[])
-        sale3 = self._sale(teatras, "VIP salė", eiliu=4, vietu=8, neigaliesiems=[], neprieinamos=[])
-
-        platintojai = [FilmuPlatintojas.objects.create(pavadinimas=p, el_pastas=e) for p, e in PLATINTOJAI]
-        zanrai = {}
-        filmai = []
-        for d in FILMAI:
-            f = Filmas.objects.create(
-                pavadinimas=d["pavadinimas"], originalus_pavadinimas=d["originalus_pavadinimas"],
-                aprasymas=d["aprasymas"], trukme_min=d["trukme_min"], cenzas=d["cenzas"],
-                kalba=d["kalba"], premjeros_data=d["premjera"], platintojas=platintojai[d["platintojas"]],
-            )
-            plakatas = PLAKATAI / d["plakatas"]
-            if plakatas.exists():
-                with plakatas.open("rb") as failas:
-                    f.plakatas.save(d["plakatas"], File(failas), save=True)
-            for z in d["zanrai"]:
-                if z not in zanrai:
-                    zanrai[z] = Zanras.objects.create(pavadinimas=z)
-                f.zanrai.add(zanrai[z])
-            filmai.append(f)
-
-        # Seansai 14 dienų: kiekvienoje salėje filmai iš eilės, be persidengimų
-        tz = timezone.get_current_timezone()
-        siandien = timezone.localdate()
-        kiekis = 0
-        for diena in range(14):
-            data = siandien + timedelta(days=diena)
-            for s_idx, sale in enumerate([sale1, sale2, sale3]):
-                pradzia = datetime.combine(data, time(11 + s_idx, 0), tzinfo=tz)
-                f_idx = (diena + s_idx * 2) % len(filmai)
-                while pradzia.hour < 22 and pradzia.date() == data:
-                    filmas = filmai[f_idx % len(filmai)]
-                    # N-18 filmas rodomas tik vakare
-                    if filmas.cenzas == "N18" and pradzia.hour < 20:
-                        f_idx += 1
-                        continue
-                    pabaiga = Seansas.apskaiciuoti_pabaiga(pradzia, filmas.trukme_min)
-                    formatas = "F3D" if (sale is sale1 and filmas.pavadinimas.startswith("Dūna")) else "F2D"
-                    seansas = Seansas.objects.create(
-                        filmas=filmas, sale=sale, pradzia=pradzia, pabaiga=pabaiga, formatas=formatas,
-                    )
-                    priedas = Decimal("2.00") if formatas == "F3D" else Decimal("0")
-                    for tipas, suma in KAINOS.items():
-                        SeansoKaina.objects.create(seansas=seansas, bilieto_tipas=tipas, suma=suma + priedas)
-                    kiekis += 1
-                    # Kitas seansas: po pabaigos, suapvalinus iki 15 min.
-                    kitas = pabaiga + timedelta(minutes=(15 - pabaiga.minute % 15) % 15)
-                    pradzia = kitas.replace(second=0, microsecond=0)
-                    f_idx += 1
-
-        admin_slaptazodis = os.environ.get("DEMO_ADMIN_PASSWORD", "Admin2026")
-        if not Naudotojas.objects.filter(email="admin@kinobilietas.lt").exists():
-            Naudotojas.objects.create_user(
-                email="admin@kinobilietas.lt", password=admin_slaptazodis, vardas="Administratorius",
-                role=Naudotojas.Role.ADMINISTRATORIUS, is_staff=True,
-            )
-        for vardas, email in [("Ona", "ona@pavyzdys.lt"), ("Jonas", "jonas@pavyzdys.lt"), ("Eglė", "egle@pavyzdys.lt")]:
-            Naudotojas.objects.create_user(
-                email=email, password="Kinas2026", vardas=vardas,
-                sutikimas_su_politika=True, sutikimo_data=timezone.now(),
-            )
-
-        self.stdout.write(self.style.SUCCESS(
-            f"Sukurta: 3 salės, {len(filmai)} filmai, {len(zanrai)} žanrai, {kiekis} seansai, 4 naudotojai."
-        ))
+        return [
+            self._sale(teatras, "1 salė", eiliu=8, vietu=15, neigaliesiems=[(1, 1), (1, 2)], neprieinamos=[(8, 15)]),
+            self._sale(teatras, "2 salė", eiliu=6, vietu=12, neigaliesiems=[(1, 1)], neprieinamos=[]),
+            self._sale(teatras, "VIP salė", eiliu=4, vietu=8, neigaliesiems=[], neprieinamos=[]),
+        ]
 
     def _sale(self, teatras, pavadinimas, eiliu, vietu, neigaliesiems, neprieinamos):
         sale = Sale.objects.create(kino_teatras=teatras, pavadinimas=pavadinimas)
@@ -184,3 +155,77 @@ class Command(BaseCommand):
                 for v in range(1, vietu + 1)
             ])
         return sale
+
+    def _sukurti_filmus(self):
+        platintojai = [FilmuPlatintojas.objects.create(pavadinimas=p, el_pastas=e) for p, e in PLATINTOJAI]
+        zanrai = {}
+        filmai = [self._sukurti_filma(d, platintojai[d["platintojas"]], zanrai) for d in FILMAI]
+        return filmai, zanrai
+
+    def _sukurti_filma(self, d, platintojas, zanrai):
+        """Sukuria filmą su plakatu ir žanrais; naujus žanrus įrašo į žodyną zanrai."""
+        filmas = Filmas.objects.create(
+            pavadinimas=d["pavadinimas"], originalus_pavadinimas=d["originalus_pavadinimas"],
+            aprasymas=d["aprasymas"], trukme_min=d["trukme_min"], cenzas=d["cenzas"],
+            kalba=d["kalba"], premjeros_data=d["premjera"], platintojas=platintojas,
+        )
+        plakatas = PLAKATAI / d["plakatas"]
+        if plakatas.exists():
+            with plakatas.open("rb") as failas:
+                filmas.plakatas.save(d["plakatas"], File(failas), save=True)
+        for pavadinimas in d["zanrai"]:
+            if pavadinimas not in zanrai:
+                zanrai[pavadinimas] = Zanras.objects.create(pavadinimas=pavadinimas)
+            filmas.zanrai.add(zanrai[pavadinimas])
+        return filmas
+
+    def _sukurti_seansus(self, sales, filmai):
+        """Seansai 14 dienų: kiekvienoje salėje filmai iš eilės, be persidengimų."""
+        siandien = timezone.localdate()
+        kiekis = 0
+        for diena in range(SEANSU_DIENOS):
+            data = siandien + timedelta(days=diena)
+            for sale_nr, sale in enumerate(sales):
+                kiekis += self._sukurti_dienos_seansus(sale, sale_nr, data, diena, filmai)
+        return kiekis
+
+    def _sukurti_dienos_seansus(self, sale, sale_nr, data, diena, filmai):
+        """Vienos salės vienos dienos seansai iš eilės. Grąžina sukurtų seansų skaičių."""
+        tz = timezone.get_current_timezone()
+        pradzia = datetime.combine(data, time(PIRMO_SEANSO_VALANDA + sale_nr, 0), tzinfo=tz)
+        filmo_nr = (diena + sale_nr * 2) % len(filmai)
+        kiekis = 0
+        while pradzia.hour < PASKUTINIO_SEANSO_PRADZIA and pradzia.date() == data:
+            filmas = filmai[filmo_nr % len(filmai)]
+            filmo_nr += 1
+            if _per_anksti(filmas, pradzia):
+                continue
+            seansas = self._sukurti_seansa(sale, filmas, pradzia, yra_pirma_sale=sale_nr == 0)
+            kiekis += 1
+            pradzia = _kito_seanso_pradzia(seansas.pabaiga)
+        return kiekis
+
+    def _sukurti_seansa(self, sale, filmas, pradzia, yra_pirma_sale):
+        formatas = _formatas(yra_pirma_sale, filmas)
+        seansas = Seansas.objects.create(
+            filmas=filmas, sale=sale, pradzia=pradzia, formatas=formatas,
+            pabaiga=Seansas.apskaiciuoti_pabaiga(pradzia, filmas.trukme_min),
+        )
+        priedas = F3D_PRIEDAS if formatas == Seansas.Formatas.F3D else Decimal("0")
+        for tipas, suma in KAINOS.items():
+            SeansoKaina.objects.create(seansas=seansas, bilieto_tipas=tipas, suma=suma + priedas)
+        return seansas
+
+    def _sukurti_naudotojus(self):
+        admin_slaptazodis = os.environ.get("DEMO_ADMIN_PASSWORD", "Admin2026")
+        kliento_slaptazodis = os.environ.get("DEMO_KLIENTO_SLAPTAZODIS", "Kinas2026")
+        if not Naudotojas.objects.filter(email=DEMO_ADMIN_EL_PASTAS).exists():
+            Naudotojas.objects.create_user(
+                email=DEMO_ADMIN_EL_PASTAS, password=admin_slaptazodis, vardas="Administratorius",
+                role=Naudotojas.Role.ADMINISTRATORIUS, is_staff=True,
+            )
+        for vardas, email in DEMO_KLIENTAI:
+            Naudotojas.objects.create_user(
+                email=email, password=kliento_slaptazodis, vardas=vardas,
+                sutikimas_su_politika=True, sutikimo_data=timezone.now(),
+            )
