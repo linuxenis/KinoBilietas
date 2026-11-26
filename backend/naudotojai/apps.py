@@ -1,0 +1,7 @@
+from django.apps import AppConfig
+
+
+class NaudotojaiConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "naudotojai"
+    verbose_name = "Autentifikacija (K4)"
